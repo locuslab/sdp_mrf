@@ -1,0 +1,82 @@
+diff --git a/pydensecrf/densecrf.pxd b/pydensecrf/densecrf.pxd
+index 00def0b..2a73695 100644
+--- a/pydensecrf/densecrf.pxd
++++ b/pydensecrf/densecrf.pxd
+@@ -65,6 +65,7 @@ cdef extern from "densecrf/include/densecrf.h":
+         c_MatrixXf startInference() const
+         void stepInference(c_MatrixXf &Q, c_MatrixXf &tmp1, c_MatrixXf &tmp2) const
+         #double gradient( int n_iterations, const ObjectiveFunction & objective, c_VectorXf * unary_grad, c_VectorXf * lbl_cmp_grad, c_VectorXf * kernel_grad=NULL ) const;
++        void vectorInference(c_MatrixXf &Q, c_MatrixXf &tmp1, c_MatrixXf &tmp2 ) const
+ 
+         double klDivergence(const c_MatrixXf &Q) const
+ 
+diff --git a/pydensecrf/densecrf.pyx b/pydensecrf/densecrf.pyx
+index 3e61e11..4dd0455 100644
+--- a/pydensecrf/densecrf.pyx
++++ b/pydensecrf/densecrf.pyx
+@@ -97,6 +97,9 @@ cdef class DenseCRF:
+     def stepInference(self, MatrixXf Q, MatrixXf tmp1, MatrixXf tmp2):
+         self._this.stepInference(Q.m, tmp1.m, tmp2.m)
+ 
++    def vectorInference(self, MatrixXf Q, MatrixXf tmp1, MatrixXf tmp2):
++        self._this.vectorInference(Q.m, tmp1.m, tmp2.m)
++
+     def klDivergence(self, MatrixXf Q):
+         return self._this.klDivergence(Q.m)
+ 
+diff --git a/pydensecrf/densecrf/include/densecrf.h b/pydensecrf/densecrf/include/densecrf.h
+index d0a9647..9a246ba 100755
+--- a/pydensecrf/densecrf/include/densecrf.h
++++ b/pydensecrf/densecrf/include/densecrf.h
+@@ -78,6 +78,9 @@ public:
+ 	MatrixXf startInference() const;
+ 	void stepInference( MatrixXf & Q, MatrixXf & tmp1, MatrixXf & tmp2 ) const;
+ 	VectorXs currentMap( const MatrixXf & Q ) const;
++
++    // perform mixing
++    void vectorInference( MatrixXf & Q, MatrixXf & tmp1, MatrixXf & tmp2 ) const;
+ 	
+ 	// Learning functions
+ 	// Compute the gradient of the objective function over mean-field marginals with
+diff --git a/pydensecrf/densecrf/src/densecrf.cpp b/pydensecrf/densecrf/src/densecrf.cpp
+index af50c67..80267e6 100755
+--- a/pydensecrf/densecrf/src/densecrf.cpp
++++ b/pydensecrf/densecrf/src/densecrf.cpp
+@@ -210,6 +210,26 @@ VectorXs DenseCRF::currentMap( const MatrixXf & Q ) const{
+ 	return r;
+ }
+ 
++// perform mixing
++void DenseCRF::vectorInference( MatrixXf & Q, MatrixXf & tmp1, MatrixXf & tmp2 ) const
++{
++    tmp1.resize( Q.rows(), Q.cols() );
++    tmp1.fill(0);
++    if( unary_ )
++        tmp1 -= unary_->get();
++
++    for( unsigned int k=0; k<pairwise_.size(); k++ ) {
++        pairwise_[k]->apply( tmp2, Q );
++        tmp1 -= tmp2;
++    }
++
++    // Extra term for scaling
++    float scale = std::sqrt(2./3.) * (M_+1);
++    Q = tmp1*scale;
++    //Q = tmp1;
++}
++
++
+ // Compute the KL-divergence of a set of marginals
+ double DenseCRF::klDivergence( const MatrixXf & Q ) const {
+ 	double kl = 0;
+diff --git a/pydensecrf/densecrf/src/pairwise.cpp b/pydensecrf/densecrf/src/pairwise.cpp
+index be01822..891c1ce 100644
+--- a/pydensecrf/densecrf/src/pairwise.cpp
++++ b/pydensecrf/densecrf/src/pairwise.cpp
+@@ -204,4 +204,4 @@ VectorXf PairwisePotential::kernelGradient( const MatrixXf & b, const MatrixXf &
+ 	// You could reuse the filtered_b from applyTranspose
+ 	compatibility_->apply( lbl_Q, Q );
+ 	return kernel_->gradient(b,lbl_Q);
+-}
+\ No newline at end of file
++}
