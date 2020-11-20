@@ -1,0 +1,359 @@
+import numpy as np
+from abc import ABC, abstractmethod
+import sys, os
+from . import _solvers
+
+# Convert vector to string
+def get_string_from_vector(v):
+    ret = ""
+    for digit in v:
+        assert digit >=0 and digit < 10
+        ret += str(digit)
+    return ret
+
+# Convert string to vector
+def get_vector_from_string(s):
+    ret = []
+    for c in s:
+        assert int(c) >= 0 and int(c) < 10
+        ret.append(int(c))
+    return np.array(ret)
+
+def get_f(A, h, s):
+    """
+    Get f = \sum_{ij}Aij\delta(si, sj)/2 + \sum_i\sum_l h_il\delta(si, l)
+    """
+    k = h.shape[1]
+    n = A.shape[0]
+    if type(s) == str:
+        s = np.array(list(s), dtype=int)
+    delta = np.zeros((k, n))
+    delta[s, np.arange(n)] = 1
+    sm = np.sum((delta.T @ delta) * A) - np.sum(A) / 2
+    truth = np.eye(k)
+    sm += 2 * np.sum((delta.T @ truth) * h) - np.sum(h)
+    return sm
+    
+def obtain_rounded_v(V, B):
+    n = V.shape[0]
+    d = V.shape[1]
+    k = B.shape[0]
+    r = np.random.normal(0, 1, size=(k, d))
+    r = r / np.linalg.norm(r, axis=1, keepdims=True)
+
+    rounded_v = np.argmax(V @ r.T, axis=1)
+    rounded_v_one_hot = np.zeros((n, k))
+    rounded_v_one_hot[np.arange(n), rounded_v] = 1
+
+    # shape(num_classes): saying that r:i maps to S:j
+    r_to_B = np.argmax(r @ B.T, axis=1)
+    transformation_matrix = np.zeros((k, k))
+    transformation_matrix[np.arange(k), r_to_B] = 1
+    rounded_v_one_hot = rounded_v_one_hot @ transformation_matrix
+    rounded_v = np.argmax(rounded_v_one_hot, axis=1)
+
+    return rounded_v
+
+def LSE(y):
+    max_y = np.max(y)
+    return np.log(np.sum(np.exp(np.array(y) - max_y))) + max_y
+
+class Solver(ABC):
+    """
+    Abstract base class for Solvers
+    """
+    @abstractmethod
+    def solve_map(self):
+        pass
+    
+    @abstractmethod
+    def solve_partition_function(self):
+        pass
+
+class M4Solver(Solver):
+    def __init__(self):
+        pass
+
+    # Mixing method
+    def __M4(self, A, h, V, max_iter, eps):
+        n = A.shape[0]
+        d = V.shape[1]
+        assert h.shape[1] == d
+        A = A.astype(np.float32)
+        h = h.astype(np.float32)
+        _V = V.astype(np.float32)
+        
+        diff = _solvers.M4(A, h, _V, eps, max_iter)
+        V[:] = _V
+        return diff
+    
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False):
+        n = A.shape[0]
+        k = h.shape[1]
+        d = int(np.ceil(np.sqrt(2*(n+k*(k+1)/2)) + 1))
+        V = np.random.normal(0, 1, size=(n, d))
+        V = V / np.linalg.norm(V, axis=1, keepdims=True)
+        B = np.zeros((k, d))
+        B[np.arange(k), np.arange(k)] = 1
+        r0 = np.sum(B, axis=0) / k
+        c = np.sqrt((k - 1) / k)
+        B = (B - r0[np.newaxis, :]) / c
+        _h = h @ B
+        V = np.asarray(V, order='C')
+        A = np.asarray(A, order='C')
+        _h = np.asarray(_h, order='C')
+        diff = self.__M4(A, _h, V, max_iter, eps)
+
+        mode_x, mode_f = None, -np.inf
+        for _ in range(rounding_iters):
+            x = obtain_rounded_v(V, B)
+            f = get_f(A, h, x)
+            if f > mode_f:
+                mode_x = x
+                mode_f = f
+        
+        if returnVB:
+            return mode_x, mode_f, V, B
+        return mode_x, mode_f
+    
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+        n = A.shape[0]
+        _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
+                                    eps=eps, returnVB=True)
+        s_list = {}
+        f_list = []
+        for _ in range(rounding_iters):
+            x = obtain_rounded_v(V, B)
+            f = get_f(A, h, x)
+            s = get_string_from_vector(x)
+            if s not in s_list:
+                s_list[s] = 1
+                f_list.append(f)
+
+        rem = np.log(1-np.exp(np.log(len(f_list))-n*np.log(k)))
+
+        y_list = []
+        while True:
+            if len(y_list) >= rounding_iters: break
+            x = np.random.choice(k, n, replace=True)
+            s = get_string_from_vector(x)
+            if s in s_list: continue
+            f = get_f(A, h, x)
+            log_q = -n * np.log(k) - rem
+            f_minus_log_q = f - log_q
+            y_list.append(f_minus_log_q)
+        sm = LSE(y_list) - np.log(len(y_list))
+        sm = LSE([sm]+f_list)
+
+        return sm
+    
+class M4PlusSolver(Solver):
+    def __init__(self):
+        pass
+
+    def __M4Plus(self, A, h, Z, k, max_iter, eps):
+        n = A.shape[0]
+        d = Z.shape[1]
+        m = d // k
+        assert A.shape[1] == n and h.shape[0] == n and h.shape[1] == d
+        assert d % k == 0
+        A = A.astype(np.float32)
+        h = h.reshape((n,m,k)).transpose(0, 2, 1)
+        h = np.ascontiguousarray(h, dtype=np.float32)
+        _Z = np.ascontiguousarray(Z.reshape((n, m, k)).transpose(0, 2, 1)).astype(np.float32)
+        
+        diff = _solvers.M4_plus(A, h, _Z, k, eps, max_iter)
+        Z[:] = _Z.reshape((n, k, m)).transpose(0, 2, 1).reshape((n, d))
+        return diff        
+        
+    def __mul_S(self, s, V):
+        d = V.shape[1]
+        k = s.shape[0]
+        assert d % k == 0
+        return (V.reshape(-1, d // k, k) @ s).reshape(V.shape)
+        
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False):
+        n = len(A)
+        k = h.shape[1]
+        d = int(np.ceil(k * np.sqrt(2*n) + 1))
+
+        while(d % k != 0):
+            d += 1
+        assert d >= k
+
+        C_hat = (k/(k-1))*np.eye(k) - (1/(k-1))*np.full((k, k), 1)
+        U, Sigma, Ut = np.linalg.svd(C_hat)
+        s = (np.diag(Sigma) ** 0.5) @ Ut
+
+        Z = np.random.normal(0, 1, size=(n, d))
+        Z = np.abs(Z)
+        Z = Z / np.linalg.norm(Z, axis=1, keepdims=True)
+
+        B = np.zeros((k, d))
+        B[np.arange(k), np.arange(k)] = 1
+
+        _h = h @ B
+
+        Z = np.asarray(Z, order='C')
+        A = np.asarray(A, order='C')
+        _h = np.asarray(_h, order='C') 
+
+        diff = self.__M4Plus(A, _h, Z, k, max_iter, eps)
+
+        V = self.__mul_S(s.T, Z)
+        B = self.__mul_S(s.T, B)
+        
+        mode_x, mode_f = None, -np.inf
+        for _ in range(rounding_iters):
+            x = obtain_rounded_v(V, B)
+            f = get_f(A, h, x)
+            if f > mode_f:
+                mode_x = x
+                mode_f = f
+
+        if returnVB:
+            return mode_x, mode_f, V, B
+        return mode_x, mode_f
+    
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+        n = A.shape[0]
+        _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
+                                    eps=eps, returnVB=True)
+        s_list = {}
+        f_list = []
+        for _ in range(rounding_iters):
+            x = obtain_rounded_v(V, B)
+            f = get_f(A, h, x)
+            s = get_string_from_vector(x)
+            if s not in s_list:
+                s_list[s] = 1
+                f_list.append(f)
+
+        rem = np.log(1-np.exp(np.log(len(f_list))-n*np.log(k)))
+
+        y_list = []
+        while True:
+            if len(y_list) >= rounding_iters: break
+            x = np.random.choice(k, n, replace=True)
+            s = get_string_from_vector(x)
+            if s in s_list: continue
+            f = get_f(A, h, x)
+            log_q = -n * np.log(k) - rem
+            f_minus_log_q = f - log_q
+            y_list.append(f_minus_log_q)
+        sm = LSE(y_list) - np.log(len(y_list))
+        sm = LSE([sm]+f_list)
+
+        return sm
+    
+class AISSolver(Solver):
+    def __init__(self):
+        pass
+    
+    # p(x) \propto \exp(\sum_{ij}Aij\delta(i, j)/2 + \sum_i\sum_k b_ik\delta(i, k))
+    # x is a vector in [0, k-1]^{n}
+    def __gibbs_sampling(self, A, h, x, temp, num_cycles=10):
+        n = len(x)
+        k = h.shape[1]
+        for cycle in range(num_cycles):
+            for i in range(n):
+                mx = -np.inf
+                for j in range(k):
+                    x[i] = j
+                    f_j = get_f(A, h, x) / temp
+                    mx = max(mx, f_j)
+
+                denominator = 0
+                for j in range(k):
+                    x[i] = j
+                    denominator += np.exp(get_f(A, h, x) / temp - mx)
+
+                sm_p = 0
+                p = np.random.rand()
+                for j in range(k):
+                    x[i] = j
+                    p_j = np.exp(get_f(A, h, x) / temp - mx) / denominator
+                    sm_p += p_j
+                    if p < sm_p:
+                        break
+        return x
+    
+    def __log_f_t(self, x, t, inv_temps, A, h):
+        n = len(x)
+        k = h.shape[1]
+        weight_on_uniform = (inv_temps[t] - 1) * n * np.log(k)
+        f = get_f(A, h, x)
+        weight_on_true = inv_temps[t] * (f)
+        return weight_on_uniform + weight_on_true
+    
+    def solve_map(self, A, h, k, num_samples=500, T=100, num_cycles=10):
+        n = len(A)
+        inv_temps = np.linspace(0, 1, T)
+        mode_x, mode_f = None, -np.inf
+        for i in range(num_samples):  
+            x = np.random.choice(k, size=n, replace=True)
+            for t in range(1, T):
+                x = self.__gibbs_sampling(A, h, x, 1 / inv_temps[t], num_cycles=num_cycles)
+                f = get_f(A, h, x)
+                if f > mode_f:
+                    mode_x = x
+                    mode_f = f
+        return mode_x, mode_f
+        
+    def solve_partition_function(self, A, h, k, num_samples=500, T=100, num_cycles=10):
+        n = len(A)
+        inv_temps = np.linspace(0, 1, T)
+        log_w_list = []
+        mx = -np.inf
+        for i in range(num_samples):  
+            x = np.random.choice(k, size=n, replace=True)
+            w = 0
+            for t in range(1, T):
+                w = w + self.__log_f_t(x, t, inv_temps, A, h) - self.__log_f_t(x, t-1, inv_temps, A, h)
+                x = self.__gibbs_sampling(A, h, x, 1 / inv_temps[t], num_cycles=num_cycles)
+            log_w_list.append(w)
+            mx = max(mx, w)
+        log_w_list = [elem - mx for elem in log_w_list]
+        logZ = mx + np.log(np.sum(np.exp(log_w_list))) - np.log(num_samples)
+        return logZ
+    
+class ExactSolver(Solver):
+    def __init__(self):
+        pass
+    
+    # Generate all k^n strings in the support
+    def __generate_strings(self, n, k):
+        assert k >= 2 and k < 10
+        if n == 1:
+            return [str(i) for i in range(k)]
+        ret = []
+        all_smaller_strings = self.__generate_strings(n-1, k)
+        for i in range(k):
+            ret.extend([str(i) + s for s in all_smaller_strings])
+        return ret
+
+    def solve_map(self, A, h, k):
+        n = len(A)
+        all_strings = self.__generate_strings(n, k)
+        mode_x, mode_f = None, -np.inf
+        for s in all_strings:
+            f = get_f(A, h, s)
+            if f > mode_f:
+                mode_x = get_vector_from_string(s)
+                mode_f = f
+         
+        return mode_x, mode_f
+    
+    def solve_partition_function(self, A, h, k):
+        n = len(A)
+        all_strings = self.__generate_strings(n, k)
+        mx = -np.inf
+        sm_list = []
+        for s in all_strings:
+            sm = get_f(A, h, s)    
+            mx = max(mx, sm)
+            sm_list.append(sm)
+        sm_list = [elem - mx for elem in sm_list]
+        logZ = np.log(np.sum(np.exp(sm_list))) + mx
+
+        return logZ
