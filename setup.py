@@ -25,6 +25,7 @@ ext_modules = [
 setup(
     name=pkg_name,
     version=__version__,
+    install_requires=['numpy'],
     author="Po-Wei Wang",
     author_email="poweiw@cs.cmu.edu",
     url="https://github.com/locuslab/sdp_mrf",
@@ -33,5 +34,9 @@ setup(
     ext_modules=ext_modules,
     extras_require={"test": "pytest"},
     cmdclass={"build_ext": build_ext},
+    packages=[pkg_name],
     zip_safe=False,
+    classifiers=[
+        "License :: OSI Approved :: MIT License",
+    ],
 )

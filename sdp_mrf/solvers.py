@@ -33,13 +33,17 @@ def get_f(A, h, s):
     truth = np.eye(k)
     sm += 2 * np.sum((delta.T @ truth) * h) - np.sum(h)
     return sm
+
+def rand_unit_vector(k, d):
+    r = np.random.normal(0, 1, size=(k, d))
+    return  r / np.linalg.norm(r, axis=1, keepdims=True)
     
 def obtain_rounded_v(V, B):
+    '''obtain rounded solution from SDP solution V and simplex B'''
     n = V.shape[0]
     d = V.shape[1]
     k = B.shape[0]
-    r = np.random.normal(0, 1, size=(k, d))
-    r = r / np.linalg.norm(r, axis=1, keepdims=True)
+    r = rand_unit_vector(k, d)
 
     rounded_v = np.argmax(V @ r.T, axis=1)
     rounded_v_one_hot = np.zeros((n, k))
@@ -54,9 +58,28 @@ def obtain_rounded_v(V, B):
 
     return rounded_v
 
+def ensure_C(x):
+    '''ensure input matrix x is C-compatible'''
+    return np.ascontiguousarray(x, dtype=np.float32)
+
 def LSE(y):
+    '''Log-sum-exp funciton'''
     max_y = np.max(y)
     return np.log(np.sum(np.exp(np.array(y) - max_y))) + max_y
+
+# get regular or probabilistic simplex
+def get_simplex(k, d, is_prob=False):
+    '''if is_prob: return a probabilistic k-simplex in R^d
+       else:       return a regular k-simplex (centered a origin) in R^d'''
+    B = np.zeros((k, d))
+    B[np.arange(k), np.arange(k)] = 1
+
+    if not is_prob:
+        r0 = np.sum(B, axis=0) / k
+        c = np.sqrt((k - 1) / k)
+        B = (B - r0[np.newaxis, :]) / c
+
+    return B
 
 class Solver(ABC):
     """
@@ -75,34 +98,22 @@ class M4Solver(Solver):
         pass
 
     # Mixing method
-    def __M4(self, A, h, V, max_iter, eps):
+    def solve(self, A, h, V_init, max_iter, eps):
         n = A.shape[0]
-        d = V.shape[1]
+        d = V_init.shape[1]
         assert h.shape[1] == d
-        A = A.astype(np.float32)
-        h = h.astype(np.float32)
-        _V = V.astype(np.float32)
-        
-        diff = _solvers.M4(A, h, _V, eps, max_iter)
-        V[:] = _V
-        return diff
+
+        A, h, V = map(ensure_C, [A, h, V_init])
+        diff = _solvers.M4(A, h, V, eps, max_iter)
+        return diff, V
     
-    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False):
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4, returnVB=False):
         n = A.shape[0]
         k = h.shape[1]
         d = int(np.ceil(np.sqrt(2*(n+k*(k+1)/2)) + 1))
-        V = np.random.normal(0, 1, size=(n, d))
-        V = V / np.linalg.norm(V, axis=1, keepdims=True)
-        B = np.zeros((k, d))
-        B[np.arange(k), np.arange(k)] = 1
-        r0 = np.sum(B, axis=0) / k
-        c = np.sqrt((k - 1) / k)
-        B = (B - r0[np.newaxis, :]) / c
-        _h = h @ B
-        V = np.asarray(V, order='C')
-        A = np.asarray(A, order='C')
-        _h = np.asarray(_h, order='C')
-        diff = self.__M4(A, _h, V, max_iter, eps)
+        V = rand_unit_vector(n, d)
+        B = get_simplex(k, d)
+        diff, V = self.solve(A, h @ B, V, max_iter, eps)
 
         mode_x, mode_f = None, -np.inf
         for _ in range(rounding_iters):
@@ -116,7 +127,7 @@ class M4Solver(Solver):
             return mode_x, mode_f, V, B
         return mode_x, mode_f
     
-    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4):
         n = A.shape[0]
         _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
                                     eps=eps, returnVB=True)
@@ -151,20 +162,18 @@ class M4PlusSolver(Solver):
     def __init__(self):
         pass
 
-    def __M4Plus(self, A, h, Z, k, max_iter, eps):
+    def solve(self, A, h, Z_init, k, max_iter, eps):
         n = A.shape[0]
-        d = Z.shape[1]
+        d = Z_init.shape[1]
         m = d // k
         assert A.shape[1] == n and h.shape[0] == n and h.shape[1] == d
         assert d % k == 0
-        A = A.astype(np.float32)
-        h = h.reshape((n,m,k)).transpose(0, 2, 1)
-        h = np.ascontiguousarray(h, dtype=np.float32)
-        _Z = np.ascontiguousarray(Z.reshape((n, m, k)).transpose(0, 2, 1)).astype(np.float32)
+        h, Z = [x.reshape((n, m, k)).transpose(0, 2, 1) for x in [h, Z_init]]
+        A, h, Z = map(ensure_C, [A, h, Z])
         
-        diff = _solvers.M4_plus(A, h, _Z, k, eps, max_iter)
-        Z[:] = _Z.reshape((n, k, m)).transpose(0, 2, 1).reshape((n, d))
-        return diff        
+        diff = _solvers.M4_plus(A, h, Z, k, eps, max_iter)
+        Z = Z.reshape((n, k, m)).transpose(0, 2, 1).reshape((n, d))
+        return diff, Z
         
     def __mul_S(self, s, V):
         d = V.shape[1]
@@ -172,7 +181,7 @@ class M4PlusSolver(Solver):
         assert d % k == 0
         return (V.reshape(-1, d // k, k) @ s).reshape(V.shape)
         
-    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False):
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4, returnVB=False):
         n = len(A)
         k = h.shape[1]
         d = int(np.ceil(k * np.sqrt(2*n) + 1))
@@ -185,23 +194,12 @@ class M4PlusSolver(Solver):
         U, Sigma, Ut = np.linalg.svd(C_hat)
         s = (np.diag(Sigma) ** 0.5) @ Ut
 
-        Z = np.random.normal(0, 1, size=(n, d))
-        Z = np.abs(Z)
-        Z = Z / np.linalg.norm(Z, axis=1, keepdims=True)
+        Z = np.abs(rand_unit_vector(n, d))
+        B = get_simplex(k, d, is_prob=True)
 
-        B = np.zeros((k, d))
-        B[np.arange(k), np.arange(k)] = 1
+        diff, Z = self.solve(A, h @ B, Z, k, max_iter, eps)
 
-        _h = h @ B
-
-        Z = np.asarray(Z, order='C')
-        A = np.asarray(A, order='C')
-        _h = np.asarray(_h, order='C') 
-
-        diff = self.__M4Plus(A, _h, Z, k, max_iter, eps)
-
-        V = self.__mul_S(s.T, Z)
-        B = self.__mul_S(s.T, B)
+        V, B = self.__mul_S(s.T, Z), self.__mul_S(s.T, B)
         
         mode_x, mode_f = None, -np.inf
         for _ in range(rounding_iters):
@@ -215,7 +213,7 @@ class M4PlusSolver(Solver):
             return mode_x, mode_f, V, B
         return mode_x, mode_f
     
-    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4):
         n = A.shape[0]
         _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
                                     eps=eps, returnVB=True)
@@ -357,3 +355,19 @@ class ExactSolver(Solver):
         logZ = np.log(np.sum(np.exp(sm_list))) + mx
 
         return logZ
+
+
+solver_registry = {  
+        'M4':           M4Solver,
+        'M4+': M4PlusSolver,
+        'AIS':          AISSolver,
+        'Exact':        ExactSolver,
+    }
+
+def find_solver(name):
+    try:
+        solver = solver_registry[name]()
+    except KeyError as e:
+        raise KeyError('Must be one of '+', '.join(solver_registry.keys())+'.')
+        
+    return solver
