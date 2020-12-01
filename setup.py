@@ -11,7 +11,7 @@ del sys.path[-1]
 
 pkg_name = 'sdp_mrf'
 ext_name = '_solvers'
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 ext_modules = [
     Pybind11Extension(pkg_name+'.'+ext_name,

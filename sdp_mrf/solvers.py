@@ -168,7 +168,7 @@ class M4PlusSolver(Solver):
         m = d // k
         assert A.shape[1] == n and h.shape[0] == n and h.shape[1] == d
         assert d % k == 0
-        h, Z = [x.reshape((n, m, k)).transpose(0, 2, 1) for x in [h, Z_init]]
+        h, Z = [x.reshape((n, m, k)).transpose(0, 2, 1).reshape(n, d) for x in [h, Z_init]]
         A, h, Z = map(ensure_C, [A, h, Z])
         
         diff = _solvers.M4_plus(A, h, Z, k, eps, max_iter)
