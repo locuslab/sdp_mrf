@@ -23,7 +23,7 @@ void scopy(float *x, float*y, int l)
         memcpy(y, x, sizeof(*x)*(size_t)l);
 }
 
-void saxpy(float *restrict y, float a, const float *restrict x, int l)
+void saxpy(float *__restrict y, float a, const float *__restrict x, int l)
 {
         int m = l-3;
         int i;

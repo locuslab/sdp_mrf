@@ -1,18 +1,27 @@
 import numpy as np
+import time
 from abc import ABC, abstractmethod
 import sys, os
 from . import _solvers
 
-# Convert vector to string
 def get_string_from_vector(v):
+    '''
+    Converts vector to string
+    :param v: a numpy array with digits in 0-9
+    Returns: the string form of v
+    '''
     ret = ""
     for digit in v:
         assert digit >=0 and digit < 10
         ret += str(digit)
     return ret
 
-# Convert string to vector
 def get_vector_from_string(s):
+    '''
+    Converts string to vector
+    :param s: a string with digits in 0-9
+    Returns: the numpy array form of s
+    '''
     ret = []
     for c in s:
         assert int(c) >= 0 and int(c) < 10
@@ -21,7 +30,11 @@ def get_vector_from_string(s):
 
 def get_f(A, h, s):
     """
-    Get f = \sum_{ij}Aij\delta(si, sj)/2 + \sum_i\sum_l h_il\delta(si, l)
+    Computes f = \sum_{ij}Aij\delta(si, sj)/2 + \sum_i\sum_l h_il\delta(si, l)
+    :param A: the coupling matrix, numpy array of dim (n, n)
+    :param h: the unary biases, numpy array of dim (n, k)
+    :param s: the argument at which f is to be computed, string/numpy array
+    Returns: f value at s
     """
     k = h.shape[1]
     n = A.shape[0]
@@ -35,11 +48,22 @@ def get_f(A, h, s):
     return sm
 
 def rand_unit_vector(k, d):
+    '''
+    Samples k uniformly random unit vectors of dimension d
+    :param k: number of unit vectors to sample, int
+    :param d: dimension of unit vectors, int
+    Returns: numpy array of dim (k, d) with rows as unit vectors
+    '''
     r = np.random.normal(0, 1, size=(k, d))
     return  r / np.linalg.norm(r, axis=1, keepdims=True)
     
 def obtain_rounded_v(V, B):
-    '''obtain rounded solution from SDP solution V and simplex B'''
+    '''
+    Obtain rounded solution from SDP solution V and simplex B
+    :param V: SDP solution, numpy array of dim (n, d)
+    :param B: simplex, numpy array of dim (k, d)
+    Returns: the rounded configuration, numpy array of dim (n,)
+    '''
     n = V.shape[0]
     d = V.shape[1]
     k = B.shape[0]
@@ -95,10 +119,23 @@ class Solver(ABC):
 
 class M4Solver(Solver):
     def __init__(self):
+        '''
+        Instantiates a M4 Solver.
+        Example usage: solver = M4Solver()
+                       solver.solve_map(A, h, k)
+        '''
         pass
 
-    # Mixing method
     def solve(self, A, h, V_init, max_iter, eps):
+        '''
+        Solve the SDP using M4
+        :param A: the coupling matrix, numpy array of dim (n,n)
+        :param h: biases, numpy array of dim (n,k)
+        :param V_init: initialization of unit vectors, dim (n, d)
+        :param max_iter: max number of iterations to run M4, int
+        :param eps: tolerance to stop M4, float
+        Returns: Solution to SDP
+        '''
         n = A.shape[0]
         d = V_init.shape[1]
         assert h.shape[1] == d
@@ -107,7 +144,13 @@ class M4Solver(Solver):
         diff = _solvers.M4(A, h, V, eps, max_iter)
         return diff, V
     
-    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4, returnVB=False):
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False, returnTime=False):
+        '''
+        Solve the MAP estimation problem.
+        :param rounding_iters: number of rounding iterations, int
+        :param returnVB: boolean value used for partition function estimation
+        :param returnTime: boolean value used for timing expts
+        '''
         n = A.shape[0]
         k = h.shape[1]
         d = int(np.ceil(np.sqrt(2*(n+k*(k+1)/2)) + 1))
@@ -116,18 +159,28 @@ class M4Solver(Solver):
         diff, V = self.solve(A, h @ B, V, max_iter, eps)
 
         mode_x, mode_f = None, -np.inf
+        t_list = []
+        f_list = []
         for _ in range(rounding_iters):
             x = obtain_rounded_v(V, B)
             f = get_f(A, h, x)
+            t_list.append(time.time())
+            f_list.append(f)
             if f > mode_f:
                 mode_x = x
                 mode_f = f
         
         if returnVB:
             return mode_x, mode_f, V, B
+        
+        if returnTime:
+            return mode_x, mode_f, t_list, f_list
         return mode_x, mode_f
     
-    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4):
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+        '''
+        Compute the partition function from the SDP solution.
+        '''
         n = A.shape[0]
         _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
                                     eps=eps, returnVB=True)
@@ -160,9 +213,23 @@ class M4Solver(Solver):
     
 class M4PlusSolver(Solver):
     def __init__(self):
+        '''
+        Instantiates a M4+ Solver.
+        Example usage: solver = M4PlusSolver()
+                       solver.solve_map(A, h, k)
+        '''
         pass
 
     def solve(self, A, h, Z_init, k, max_iter, eps):
+        '''
+        Solve the SDP using M4+
+        :param A: the coupling matrix, numpy array of dim (n,n)
+        :param h: biases, numpy array of dim (n,k)
+        :param V_init: initialization of unit vectors, dim (n, d)
+        :param max_iter: max number of iterations to run M4, int
+        :param eps: tolerance to stop M4, float
+        Returns: Solution to SDP
+        '''
         n = A.shape[0]
         d = Z_init.shape[1]
         m = d // k
@@ -176,12 +243,21 @@ class M4PlusSolver(Solver):
         return diff, Z
         
     def __mul_S(self, s, V):
+        '''
+        Efficiently multiply V with s using block structure
+        '''
         d = V.shape[1]
         k = s.shape[0]
         assert d % k == 0
         return (V.reshape(-1, d // k, k) @ s).reshape(V.shape)
         
-    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4, returnVB=False):
+    def solve_map(self, A, h, k, rounding_iters=500, max_iter=100, eps=0, returnVB=False, returnTime=False):
+        '''
+        Solve the MAP estimation problem.
+        :param rounding_iters: number of rounding iterations, int
+        :param returnVB: boolean value used for partition function estimation
+        :param returnTime: boolean value used for timing expts
+        '''
         n = len(A)
         k = h.shape[1]
         d = int(np.ceil(k * np.sqrt(2*n) + 1))
@@ -202,18 +278,28 @@ class M4PlusSolver(Solver):
         V, B = self.__mul_S(s.T, Z), self.__mul_S(s.T, B)
         
         mode_x, mode_f = None, -np.inf
+        t_list = []
+        f_list = []
         for _ in range(rounding_iters):
             x = obtain_rounded_v(V, B)
             f = get_f(A, h, x)
+            t_list.append(time.time())
+            f_list.append(f)
             if f > mode_f:
                 mode_x = x
                 mode_f = f
 
         if returnVB:
             return mode_x, mode_f, V, B
+        
+        if returnTime:
+            return mode_x, mode_f, t_list, f_list
         return mode_x, mode_f
     
-    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=1e-4):
+    def solve_partition_function(self, A, h, k, rounding_iters=500, max_iter=100, eps=0):
+        '''
+        Compute the partition function from the SDP solution.
+        '''
         n = A.shape[0]
         _, _, V, B = self.solve_map(A, h, k, rounding_iters=rounding_iters, max_iter=max_iter,
                                     eps=eps, returnVB=True)
@@ -246,11 +332,25 @@ class M4PlusSolver(Solver):
     
 class AISSolver(Solver):
     def __init__(self):
+        '''
+        Instantiates a AIS Solver.
+        Example usage: solver = AISSolver()
+                       solver.solve_map(A, h, k)
+        '''
         pass
     
     # p(x) \propto \exp(\sum_{ij}Aij\delta(i, j)/2 + \sum_i\sum_k b_ik\delta(i, k))
     # x is a vector in [0, k-1]^{n}
     def __gibbs_sampling(self, A, h, x, temp, num_cycles=10):
+        '''
+        Run a Gibbs Sampling chain on x
+        :param A: the coupling matrix, numpy array of dim (n,n)
+        :param h: biases, numpy array of dim (n,k)
+        :param x: the seed for gibbs sampling, numpy array/string of dim (n,)
+        :param temp: temperature of sampling, int
+        :param num_cycles: number of cycles of gibbs sampling, int
+        Returns: The sample after doing num_cycles cycles of gibbs sampling
+        '''
         n = len(x)
         k = h.shape[1]
         for cycle in range(num_cycles):
@@ -277,6 +377,9 @@ class AISSolver(Solver):
         return x
     
     def __log_f_t(self, x, t, inv_temps, A, h):
+        '''
+        Compute function value at t^th step of annealing in AIS
+        '''
         n = len(x)
         k = h.shape[1]
         weight_on_uniform = (inv_temps[t] - 1) * n * np.log(k)
@@ -284,21 +387,37 @@ class AISSolver(Solver):
         weight_on_true = inv_temps[t] * (f)
         return weight_on_uniform + weight_on_true
     
-    def solve_map(self, A, h, k, num_samples=500, T=100, num_cycles=10):
+    def solve_map(self, A, h, k, num_samples=500, T=100, num_cycles=10, returnTime=False):
+        '''
+        Solve the MAP estimation problem.
+        :param num_samples: number of annealed samples
+        :param T: number of temperatures used in annealing
+        :param num_cycles: number of cycles of gibbs sampling
+        :param returnTime: boolean value used for timing expts
+        '''
         n = len(A)
         inv_temps = np.linspace(0, 1, T)
         mode_x, mode_f = None, -np.inf
+        t_list = []
+        f_list = []
         for i in range(num_samples):  
             x = np.random.choice(k, size=n, replace=True)
             for t in range(1, T):
                 x = self.__gibbs_sampling(A, h, x, 1 / inv_temps[t], num_cycles=num_cycles)
                 f = get_f(A, h, x)
+                t_list.append(time.time())
+                f_list.append(f)
                 if f > mode_f:
                     mode_x = x
                     mode_f = f
+        if returnTime:
+            return mode_x, mode_f, t_list, f_list
         return mode_x, mode_f
         
     def solve_partition_function(self, A, h, k, num_samples=500, T=100, num_cycles=10):
+        '''
+        Compute the partition function via AIS.
+        '''
         n = len(A)
         inv_temps = np.linspace(0, 1, T)
         log_w_list = []
@@ -317,10 +436,17 @@ class AISSolver(Solver):
     
 class ExactSolver(Solver):
     def __init__(self):
+        '''
+        Instantiates a Exact Solver.
+        Example usage: solver = ExactSolver()
+                       solver.solve_map(A, h, k)
+        '''
         pass
     
-    # Generate all k^n strings in the support
     def __generate_strings(self, n, k):
+        '''
+        Generate all k^n strings in the support
+        '''
         assert k >= 2 and k < 10
         if n == 1:
             return [str(i) for i in range(k)]
@@ -331,6 +457,9 @@ class ExactSolver(Solver):
         return ret
 
     def solve_map(self, A, h, k):
+        '''
+        Compute the map estimate exactly via brute force
+        '''
         n = len(A)
         all_strings = self.__generate_strings(n, k)
         mode_x, mode_f = None, -np.inf
@@ -343,6 +472,9 @@ class ExactSolver(Solver):
         return mode_x, mode_f
     
     def solve_partition_function(self, A, h, k):
+        '''
+        Compute the partition function exactly via brute force
+        '''
         n = len(A)
         all_strings = self.__generate_strings(n, k)
         mx = -np.inf
@@ -365,6 +497,9 @@ solver_registry = {
     }
 
 def find_solver(name):
+    '''
+    Map solver names to solver objects
+    '''
     try:
         solver = solver_registry[name]()
     except KeyError as e:

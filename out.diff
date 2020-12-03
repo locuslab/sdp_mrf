@@ -1,0 +1,27 @@
+diff --git a/src/pybind.cpp b/src/pybind.cpp
+index 4b43cef..04a5554 100644
+--- a/src/pybind.cpp
++++ b/src/pybind.cpp
+@@ -2,9 +2,7 @@
+ #include <pybind11/numpy.h>
+ #include <stdio.h>
+ 
+-extern "C" {
+ #include "solvers.h"
+-}
+ 
+ namespace py = pybind11;
+ 
+diff --git a/src/solvers.c b/src/solvers.c
+index 2e3fbb4..089f3b9 100644
+--- a/src/solvers.c
++++ b/src/solvers.c
+@@ -23,7 +23,7 @@ void scopy(float *x, float*y, int l)
+         memcpy(y, x, sizeof(*x)*(size_t)l);
+ }
+ 
+-void saxpy(float *restrict y, float a, const float *restrict x, int l)
++void saxpy(float *__restrict y, float a, const float *__restrict x, int l)
+ {
+         int m = l-3;
+         int i;

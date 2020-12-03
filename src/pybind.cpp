@@ -2,9 +2,7 @@
 #include <pybind11/numpy.h>
 #include <stdio.h>
 
-extern "C" {
 #include "solvers.h"
-}
 
 namespace py = pybind11;
 
